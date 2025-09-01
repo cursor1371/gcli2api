@@ -50,6 +50,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
+    environment: "github actions master"
     permissions:
       contents: write
     steps:

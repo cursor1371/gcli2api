@@ -22,18 +22,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
 # ---------- Runtime stage ----------
 FROM alpine:3.20 AS runtime
 
-RUN apk --no-cache add ca-certificates
-
 WORKDIR /app
-COPY --from=builder /out/gcli2api /app/gcli2api
-COPY config.json.example /app/config.json.example
-
+ENTRYPOINT ["/app/gcli2api"]
+CMD ["server", "-c", "/app/config.json"]
 EXPOSE 8085
+RUN apk --no-cache add ca-certificates
 
 # Run as non-root by default
 RUN adduser -D -H -u 10001 appuser
 USER 10001
 
-ENTRYPOINT ["/app/gcli2api"]
-CMD ["server", "-c", "/app/config.json"]
-
+COPY config.json.example /app/config.json.example
+COPY --from=builder /out/gcli2api /app/gcli2api
