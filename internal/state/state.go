@@ -18,6 +18,7 @@ import (
 type Store struct {
 	db     *sql.DB
 	mem    map[string]string // fallback when db unavailable
+	memRR  map[string]uint64 // in-memory round-robin counters
 	mu     sync.RWMutex
 	closed bool
 }
@@ -25,7 +26,7 @@ type Store struct {
 // Open opens a SQLite database at path and ensures schema. If opening fails, a
 // memory-only store is returned with db == nil.
 func Open(path string) (*Store, error) {
-	s := &Store{mem: make(map[string]string)}
+	s := &Store{mem: make(map[string]string), memRR: make(map[string]uint64)}
 	// Ensure parent directory exists if path contains directories
 	if dir := filepath.Dir(path); dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -60,6 +61,15 @@ CREATE TABLE IF NOT EXISTS token_project (
 );
 CREATE INDEX IF NOT EXISTS idx_token_project_client ON token_project(client_id);
 CREATE INDEX IF NOT EXISTS idx_token_project_last_used ON token_project(last_used_at);
+
+-- Round-robin counter per (provider, client_id)
+CREATE TABLE IF NOT EXISTS rr_counter (
+  provider TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  value INTEGER NOT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(provider, client_id)
+);
 `
 	_, err := db.Exec(ddl)
 	return err
@@ -116,4 +126,41 @@ func (s *Store) UpsertProjectID(ctx context.Context, tokenKey, provider, clientI
 func ComputeTokenKey(provider, clientID, identityValue string) string {
 	h := sha256.Sum256([]byte(provider + ":" + clientID + ":" + identityValue))
 	return hex.EncodeToString(h[:])
+}
+
+// GetRRCounter returns the persisted round-robin counter for a (provider, clientID).
+// ok == false indicates not found.
+func (s *Store) GetRRCounter(ctx context.Context, provider, clientID string) (uint64, bool, error) {
+	if s.db == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		key := provider + "\x00" + clientID
+		v, ok := s.memRR[key]
+		return v, ok, nil
+	}
+	var val uint64
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM rr_counter WHERE provider = ? AND client_id = ?`, provider, clientID).Scan(&val)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return val, true, nil
+}
+
+// SetRRCounter upserts the round-robin counter for (provider, clientID).
+func (s *Store) SetRRCounter(ctx context.Context, provider, clientID string, value uint64) error {
+	if s.db == nil {
+		s.mu.Lock()
+		key := provider + "\x00" + clientID
+		s.memRR[key] = value
+		s.mu.Unlock()
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO rr_counter (provider, client_id, value, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(provider, client_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+		provider, clientID, value, time.Now())
+	return err
 }

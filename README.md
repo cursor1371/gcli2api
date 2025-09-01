@@ -1,6 +1,6 @@
 # gemini-cli-2api
 
-一个用 Go 实现的轻量 HTTP 服务，把 gemini-cli 所使用的 Google Code Assist 的后端能力以“Gemini v1beta 风格”的 HTTP API 暴露出来。支持非流式与 SSE 流式生成、API Key 鉴权、多账户轮询
+一个用 Go 实现的轻量 HTTP 服务，把 gemini-cli 所使用的 API 以 “Gemini v1beta 风格” 的 HTTP API 暴露出来。支持非流式与 SSE 流式生成、多账户轮询
 
 ## 安装
 
@@ -66,7 +66,7 @@ go build -o gcli2api .
 ```json
 {
   "authKey": "YOUR-SECRET-KEY",
-  "port": 6005,
+  "port": 8085,
   "host": "127.0.0.1",
   "geminiOauthCredsFiles": [
     "~/.gemini_account1/oauth_creds.json",

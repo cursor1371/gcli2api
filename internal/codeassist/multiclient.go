@@ -78,6 +78,13 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 	if len(mc.entries) == 0 {
 		return nil, fmt.Errorf("no valid credentials provided")
 	}
+	// Load persisted round-robin counter, if available, so we continue from
+	// the next account on restart instead of defaulting to index 0.
+	if mc.store != nil {
+		if v, ok, err := mc.store.GetRRCounter(context.Background(), mc.provider, mc.clientID); err == nil && ok {
+			atomic.StoreUint64(&mc.rr, v)
+		}
+	}
 	logrus.Infof("[MultiClient] initialized with %d credential(s)", len(mc.entries))
 	return mc, nil
 }
@@ -88,6 +95,11 @@ func (mc *MultiClient) pickStart() int {
 		return 0
 	}
 	v := atomic.AddUint64(&mc.rr, 1) - 1
+	// Best-effort persistence of the incremented counter (v+1). This allows
+	// the next process start to pick the next account in sequence.
+	if mc.store != nil {
+		_ = mc.store.SetRRCounter(context.Background(), mc.provider, mc.clientID, v+1)
+	}
 	return int(v % uint64(n))
 }
 
