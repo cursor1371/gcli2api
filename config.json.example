@@ -1,0 +1,13 @@
+{
+  "authKey": "UNSAFE-KEY-REPLACE",
+  "port": 6005,
+  "host": "127.0.0.1",
+  "geminiOauthCredsFiles": [
+    "~/.gemini_account1/oauth_creds.json",
+    "~/.gemini_account2/oauth_creds.json"
+  ],
+  "requestMaxRetries": 2,
+  "requestBaseDelay": 1000,
+  "sqlitePath": "./data/state.db",
+  "proxy": "http://127.0.0.1:9999"
+}
