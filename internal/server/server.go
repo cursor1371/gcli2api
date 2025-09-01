@@ -325,16 +325,21 @@ func (s *Server) handleStreamGenerateContent(model string, w http.ResponseWriter
 				return
 			}
 			flusher.Flush()
-		case err := <-errs:
-			if err == nil {
-				return
+		case e, ok := <-errs:
+			// If the error channel is closed or yields a nil error,
+			// treat it as a normal end-of-stream signal but continue
+			// draining the output channel until it closes.
+			if !ok || e == nil {
+				// Disable further selects on errs to avoid busy looping on a closed channel
+				errs = nil
+				continue
 			}
-			// Emit error event then end
+			// Non-nil error: emit error event then end
 			if _, err := fmt.Fprint(w, "event: error\n"); err != nil {
 				logrus.Errorf("error writing error event: %v", err)
 				return
 			}
-			if _, err := fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", err.Error()); err != nil {
+			if _, err := fmt.Fprintf(w, "data: {\"error\":{\"message\":%q}}\n\n", e.Error()); err != nil {
 				logrus.Errorf("error writing error data: %v", err)
 				return
 			}
