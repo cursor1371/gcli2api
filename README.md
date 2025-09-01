@@ -4,16 +4,18 @@
 
 ## 安装
 
-从下载页面找到二进制文件安装: 
+从下载页面找到二进制文件安装: https://github.com/boltrunner/gcli2api/releases
 
 或者自己编译:
 
 ```
+git clone https://github.com/boltrunner/gcli2api.git
+cd gcli2api
 go build -o gcli2api .
 ./gcli2api server --config config.json
 ```
 
-配置文件参考 config.json.example
+配置文件参考 [config.json.example](https://github.com/boltrunner/gcli2api/blob/master/config.json.example)
 
 ## gemini-cli 多账户登录
 

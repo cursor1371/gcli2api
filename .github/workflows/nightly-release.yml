@@ -25,41 +25,19 @@ jobs:
           check-latest: true
           cache: true
 
-      - name: Build binaries (linux/darwin/windows, amd64/arm64)
-        shell: bash
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Setup Python and install dependencies
         run: |
-          set -euo pipefail
-          app_name="gcli2api"
-          mkdir -p dist
-          platforms=(
-            "linux/amd64"
-            "linux/arm64"
-            "darwin/arm64"
-            "windows/amd64"
-          )
-          for plat in "${platforms[@]}"; do
-            IFS=/ read -r GOOS GOARCH <<<"$plat"
-            ext=""
-            archive_ext="tar.gz"
-            if [ "$GOOS" = "windows" ]; then ext=".exe"; archive_ext="zip"; fi
-            bin="dist/${app_name}_${GOOS}_${GOARCH}${ext}"
-            echo "Building $bin"
-            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build -trimpath -ldflags "-s -w" -o "$bin" .
-            pkg="dist/${app_name}_${GOOS}_${GOARCH}.${archive_ext}"
-            if [ "$archive_ext" = "zip" ]; then
-              (cd dist && zip -q "$(basename "$pkg")" "$(basename "$bin")")
-              rm -f "$bin"
-            else
-              (cd dist && tar -czf "$(basename "$pkg")" "$(basename "$bin")")
-              rm -f "$bin"
-            fi
-          done
-          # Checksums
-          if command -v sha256sum >/dev/null 2>&1; then
-            (cd dist && sha256sum * > SHA256SUMS.txt)
-          else
-            (cd dist && shasum -a 256 * > SHA256SUMS.txt)
-          fi
+          uv python install 3.12
+          uv sync
+
+      - name: Build binaries using Python script
+        run: |
+          uv run python scripts/release.py build-release
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -83,26 +61,20 @@ jobs:
           name: build-artifacts
           path: dist
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Setup Python and install dependencies
+        run: |
+          uv python install 3.12
+          uv sync
+
       - name: Create or update release and upload assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          set -euo pipefail
-          sha7="${GITHUB_SHA::7}"
-          tag="nightly-${sha7}"
-          title="nightly-${sha7}"
-
-          # Create the release if it doesn't exist
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag exists; will update assets."
-          else
-            gh release create "$tag" \
-              --title "$title" \
-              --notes "Automated nightly build for commit $GITHUB_SHA" \
-              --prerelease
-          fi
-
-          # Upload/overwrite assets
-          gh release upload "$tag" dist/* --clobber
+          uv run python scripts/release.py upload-release
 
