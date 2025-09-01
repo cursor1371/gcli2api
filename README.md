@@ -1,11 +1,25 @@
 # gemini-cli-2api
 
-一个用 Go 实现的轻量 HTTP 服务，把 Google Code Assist 的后端能力以“Gemini v1beta 风格”的 HTTP API 暴露出来。支持非流式与 SSE 流式生成、API Key 鉴权、多账户轮询
+一个用 Go 实现的轻量 HTTP 服务，把 gemini-cli 所使用的 Google Code Assist 的后端能力以“Gemini v1beta 风格”的 HTTP API 暴露出来。支持非流式与 SSE 流式生成、API Key 鉴权、多账户轮询
 
-- 入口：`main.go`（基于 Cobra 的 CLI）
-- 主要模块：`internal/server`、`internal/codeassist`、`internal/auth`、`internal/gemini`、`internal/httpx`、`internal/state`
-- 配置：`config.json`（通过 `-c/--config` 指定路径）
-- 运行依赖：Go 工具链与 Google OAuth 凭据 JSON（Code Assist/Cloud 授权）
+## 安装
+
+从下载页面找到二进制文件安装: 
+
+或者自己编译:
+
+```
+go build -o gcli2api .
+./gcli2api server --config config.json
+```
+
+配置文件参考 config.json.example
+
+## gemini-cli 多账户登录
+
+把本地的 `~/.gemini` 目录移走, 然后运行 gemini-cli， 此时 gemini-cli 会打开浏览器让你登录。
+
+重复操作, 这样就能得到多个 gemini 的 oauth_creds.json 路径。
 
 ## 命令
 - `server`：启动 HTTP 服务（启动前会校验配置）
