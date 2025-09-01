@@ -8,6 +8,27 @@ permissions:
   contents: write
 
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      other_files_changed: ${{ steps.changed-files.outputs.any_changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch all the history to get all commits
+          fetch-depth: 0
+
+      - name: Get changed files to ignore markdown
+        id: changed-files
+        uses: tj-actions/changed-files@v44
+        with:
+          files_ignore: |
+            **/*.md
+
   build:
     name: Build cross-platform binaries
     runs-on: ubuntu-latest
@@ -47,9 +68,9 @@ jobs:
 
   release:
     name: Create/Update nightly release
-    needs: build
+    needs: [build, changes]
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'workflow_dispatch' || needs.changes.outputs.other_files_changed == 'true')
     environment: "github actions master"
     permissions:
       contents: write

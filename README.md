@@ -1,12 +1,57 @@
 # gemini-cli-2api
 
-一个用 Go 实现的轻量 HTTP 服务，把 gemini-cli 所使用的 API 以 “Gemini v1beta 风格” 的 HTTP API 暴露出来。支持非流式与 SSE 流式生成、多账户轮询
+一个用 Go 实现的轻量级 HTTP 服务，它将 `gemini-cli` 所使用的 API 封装为 “Gemini v1beta 风格” 的 HTTP 接口。
+核心功能包括非流式与 SSE 流式生成、多账户轮询和自动重试。
 
 ## 安装
 
-从下载页面找到二进制文件安装: https://github.com/boltrunner/gcli2api/releases
+从 [Releases 页面](https://github.com/boltrunner/gcli2api/releases)下载最新的二进制文件。
 
-或者自己编译:
+配置文件请参考 [`config.json.example`](./config.json.example)。
+
+## Docker 使用
+- **准备配置**: 将凭据与数据路径映射到容器内。例如，在宿主机准备 `config.json` 并设置如下路径:
+  - `geminiOauthCredsFiles`: `"/secrets/account1/oauth_creds.json"`
+  - `sqlitePath`: `"/app/data/state.db"`
+- **运行服务**:
+  ```bash
+  docker run --rm \
+    -p 8085:8085 \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    -v ~/.gemini_accounts:/secrets:rw \
+    -v $(pwd)/data:/app/data:rw \
+    --name gcli2api \
+    boltrunner000/gcli2api:latest
+  ```
+  - **说明**: 容器内默认执行 `server -c /app/config.json` 命令，并暴露 `8085` 端口。
+  - **健康检查**: `curl http://127.0.0.1:8085/health`
+- **校验配置 (容器内)**:
+  ```bash
+  docker run --rm \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    boltrunner000/gcli2api:latest check -c /app/config.json
+  ```
+- **写入权限提示**: 容器默认以非 root 用户 (UID 10001) 运行。如需将刷新后的 token 写回挂载目录，请确保该目录对容器内用户可写。如果遇到权限问题，可以尝试使用宿主机的 UID 运行容器：
+  ```bash
+  docker run --rm -p 8085:8085 \
+    -u $(id -u):$(id -g) \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    -v ~/.gemini_accounts:/secrets:rw \
+    -v $(pwd)/data:/app/data:rw \
+    boltrunner000/gcli2api:latest
+  ```
+
+
+## 获取多账户凭据
+
+要为多个账户生成凭据，请重复以下步骤：
+1. 将当前的 `~/.gemini` 目录重命名或移走。
+2. 运行 `gemini-cli`，在浏览器中登录一个新账户。
+3. 保存新生成的 `~/.gemini/oauth_creds.json` 文件。
+
+将获取到的多个凭据文件路径填入 `config.json` 即可实现轮询。
+
+## 从源码构建
 
 ```
 git clone https://github.com/boltrunner/gcli2api.git
@@ -14,14 +59,6 @@ cd gcli2api
 go build -o gcli2api .
 ./gcli2api server --config config.json
 ```
-
-配置文件参考 [config.json.example](https://github.com/boltrunner/gcli2api/blob/master/config.json.example)
-
-## gemini-cli 多账户登录
-
-把本地的 `~/.gemini` 目录移走, 然后运行 gemini-cli， 此时 gemini-cli 会打开浏览器让你登录。
-
-重复操作, 这样就能得到多个 gemini 的 oauth_creds.json 路径。
 
 ## 命令
 - `server`：启动 HTTP 服务（启动前会校验配置）
@@ -31,16 +68,15 @@ go build -o gcli2api .
 
 未传子命令时默认等价于 `server`。
 
-## 它能做什么
-- 暴露兼容形态的 Gemini 生成接口：
-  - `GET /health` 健康检查
-  - `GET /v1beta/models` 模型列表（内置 `gemini-2.5-flash` 与 `gemini-2.5-pro`）
-  - `POST /v1beta/models/<model>:generateContent` 非流式生成
-  - `POST /v1beta/models/<model>:streamGenerateContent` SSE 流式生成
-- 支持请求重试（401/429/5xx）与指数退避（带抖动）
-- 支持单凭据或多凭据池（流式同一路使用同一凭据）
-- 自动发现/缓存 GCP Project ID 到 SQLite（默认 `./data/state.db`）
-- 可选 API Key 保护：设置 `authKey` 后，需携带 `Authorization: Bearer <key>` 或 `x-goog-api-key: <key>` 或 `?key=<key>`
+## 主要功能
+- **Gemini 风格接口**:
+  - `GET /health`: 健康检查
+  - `GET /v1beta/models`: 模型列表 (内置 `gemini-2.5-flash`, `gemini-2.5-pro`)
+  - `POST /v1beta/models/<model>:generateContent`: 非流式生成
+  - `POST /v1beta/models/<model>:streamGenerateContent`: SSE 流式生成
+- **请求轮询与重试**: 支持多凭据轮询，以及针对 `401/429/5xx` 错误的指数退避重试。
+- **状态缓存**: 自动将 GCP Project ID 缓存至 SQLite 数据库 (默认为 `./data/state.db`)。
+- **API Key 认证**: 可设置 `authKey`，要求客户端在请求时提供 `Authorization: Bearer <key>` 或 `x-goog-api-key: <key>`。
 
 ## 快速开始
 1) 准备 OAuth 凭据 JSON（含可刷新令牌）
@@ -91,51 +127,13 @@ curl -X POST \
   -d '{"contents":[{"role":"user","parts":[{"text":"你好，介绍一下你自己"}]}]}'
 ```
 
-## 构建与运行
-- 本地运行：`go run . server -c ./config.json`
-- 校验配置：`go run . check -c ./config.json`
-- 构建二进制：`go build -o gcli2api .`
-
-## Docker 使用
-- 准备配置：将凭据与数据路径映射为容器内路径，例如：
-  - 在宿主机准备 `config.json`，其中路径示例：
-    - `geminiOauthCredsFiles`: `"/secrets/account1/oauth_creds.json"` 等
-    - `sqlitePath`: `"/app/data/state.db"`
-- 运行服务：
-  ```bash
-  docker run --rm \
-    -p 8085:8085 \
-    -v $(pwd)/config.json:/app/config.json:ro \
-    -v ~/.gemini_accounts:/secrets:rw \
-    -v $(pwd)/data:/app/data:rw \
-    --name gcli2api \
-    boltrunner000/gcli2api:latest
-  ```
-  - 说明：容器内默认执行 `server -c /app/config.json`，并暴露 `8085`。
-  - 健康检查：`curl http://127.0.0.1:8085/health`
-- 校验配置（容器内）：
-  ```bash
-  docker run --rm \
-    -v $(pwd)/config.json:/app/config.json:ro \
-    boltrunner000/gcli2api:latest check -c /app/config.json
-  ```
-- 写入权限提示：容器默认使用非 root 用户（UID 10001）。如需将刷新后的 token 写回挂载目录，请确保挂载目录可写，或使用宿主机 UID 运行：
-  ```bash
-  docker run --rm -p 8085:8085 \
-    -u $(id -u):$(id -g) \
-    -v $(pwd)/config.json:/app/config.json:ro \
-    -v ~/.gemini_accounts:/secrets:rw \
-    -v $(pwd)/data:/app/data:rw \
-    boltrunner000/gcli2api:latest
-  ```
-
 ## 测试与覆盖率
 - 运行测试：`go test ./...`
 - 覆盖率报告：`go test ./... -coverprofile=coverage.out && go tool cover -html=coverage.out`
 
 ## 认证与安全
-- OAuth：通过 `geminiOauthCredsFiles` 提供凭据；运行中令牌自动刷新并可能持久化（0600 权限）。
-- API Key：配置 `authKey` 后，受保护接口需携带上述任一方式。
+- **OAuth**: 通过 `geminiOauthCredsFiles` 提供凭据。服务会自动刷新 token 并以 `0600` 权限持久化。
+- **API Key**: 配置 `authKey` 后，受保护的接口需要提供正确的 Key。
 
 ## 致谢
 
