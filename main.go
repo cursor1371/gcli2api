@@ -112,7 +112,7 @@ func main() {
 			// Determine credential sources (multi-credential only)
 			var sources []codeassist.CredSource
 			if len(cfg.GeminiCredsFilePaths) == 0 {
-				return fmt.Errorf("no GEMINI_OAUTH_CREDS_FILE_PATHS configured; provide at least one path")
+				return fmt.Errorf("no geminiOauthCredsFiles configured; provide at least one path")
 			}
 			for _, p := range cfg.GeminiCredsFilePaths {
 				if p == "" {
@@ -126,7 +126,7 @@ func main() {
 				sources = append(sources, codeassist.CredSource{Path: xp, Raw: rt, Persist: true})
 			}
 			if len(sources) == 0 {
-				return fmt.Errorf("no usable credentials from GEMINI_OAUTH_CREDS_FILE_PATHS")
+				return fmt.Errorf("no usable credentials from geminiOauthCredsFiles")
 			}
 
 			// Ensure SQLitePath parent directory exists

@@ -96,6 +96,40 @@ curl -X POST \
 - 校验配置：`go run . check -c ./config.json`
 - 构建二进制：`go build -o gcli2api .`
 
+## Docker 使用
+- 构建镜像：`docker build -t gcli2api:latest .`
+- 准备配置：将凭据与数据路径映射为容器内路径，例如：
+  - 在宿主机准备 `config.json`，其中路径示例：
+    - `geminiOauthCredsFiles`: `"/secrets/account1/oauth_creds.json"` 等
+    - `sqlitePath`: `"/app/data/state.db"`
+- 运行服务：
+  ```bash
+  docker run --rm \
+    -p 8085:8085 \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    -v ~/.gemini_accounts:/secrets:rw \
+    -v $(pwd)/data:/app/data:rw \
+    --name gcli2api \
+    gcli2api:latest
+  ```
+  - 说明：容器内默认执行 `server -c /app/config.json`，并暴露 `8085`。
+  - 健康检查：`curl http://127.0.0.1:8085/health`
+- 校验配置（容器内）：
+  ```bash
+  docker run --rm \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    gcli2api:latest check -c /app/config.json
+  ```
+- 写入权限提示：容器默认使用非 root 用户（UID 10001）。如需将刷新后的 token 写回挂载目录，请确保挂载目录可写，或使用宿主机 UID 运行：
+  ```bash
+  docker run --rm -p 8085:8085 \
+    -u $(id -u):$(id -g) \
+    -v $(pwd)/config.json:/app/config.json:ro \
+    -v ~/.gemini_accounts:/secrets:rw \
+    -v $(pwd)/data:/app/data:rw \
+    gcli2api:latest
+  ```
+
 ## 测试与覆盖率
 - 运行测试：`go test ./...`
 - 覆盖率报告：`go test ./... -coverprofile=coverage.out && go tool cover -html=coverage.out`
