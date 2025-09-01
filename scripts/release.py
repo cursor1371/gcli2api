@@ -10,6 +10,7 @@ import sys
 import zipfile
 import tarfile
 import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict
 
@@ -140,8 +141,9 @@ def upload_release(dist_dir: str, github_token: str, github_sha: str):
         sys.exit(1)
 
     sha7 = github_sha[:7]
-    tag = f"nightly-{sha7}"
-    title = f"nightly-{sha7}"
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    tag = f"nightly-{timestamp}-{sha7}"
+    title = f"nightly-{timestamp}-{sha7}"
 
     # Check if release exists
     release_exists = False
