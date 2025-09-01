@@ -25,6 +25,9 @@ jobs:
           check-latest: true
           cache: true
 
+      - name: Run tests
+        run: go test ./...
+
       - name: Install uv
         uses: astral-sh/setup-uv@v3
         with:
@@ -54,6 +57,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Fetch all the history for changelog generation
+          fetch-depth: 0
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4

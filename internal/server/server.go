@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"gcli2api/internal/codeassist"
 	"gcli2api/internal/config"
 	"gcli2api/internal/gemini"
+
 	// "gcli2api/internal/utils"
 
 	"github.com/sirupsen/logrus"
@@ -33,19 +35,48 @@ type Server struct {
 	cfg      config.Config
 	httpCli  *http.Client
 	caClient CodeAssist
+	// sem is a simple semaphore for concurrency limiting
+	sem chan struct{}
 }
 
 func New(cfg config.Config, httpCli *http.Client) *Server {
+	// Apply safe defaults when fields are zero to match config.LoadConfig behavior
+	if cfg.RequestMaxRetries == 0 {
+		cfg.RequestMaxRetries = 3
+	}
+	if cfg.RequestBaseDelayMillis == 0 {
+		cfg.RequestBaseDelayMillis = 1000
+	}
+	if cfg.RequestMaxBodyBytes == 0 {
+		cfg.RequestMaxBodyBytes = 16 * 1024 * 1024
+	}
+	if cfg.MaxConcurrentRequests == 0 {
+		cfg.MaxConcurrentRequests = 64
+	}
 	return &Server{
 		cfg:      cfg,
 		httpCli:  httpCli,
 		caClient: codeassist.NewClient(httpCli, cfg.RequestMaxRetries, time.Duration(cfg.RequestBaseDelayMillis)*time.Millisecond),
+		sem:      make(chan struct{}, cfg.MaxConcurrentRequests),
 	}
 }
 
 // NewWithCAClient allows injecting a custom CodeAssist client (for tests).
 func NewWithCAClient(cfg config.Config, ca CodeAssist) *Server {
-	return &Server{cfg: cfg, caClient: ca}
+	// Apply same defaults as New to ensure handlers work in tests with zero config
+	if cfg.RequestMaxRetries == 0 {
+		cfg.RequestMaxRetries = 3
+	}
+	if cfg.RequestBaseDelayMillis == 0 {
+		cfg.RequestBaseDelayMillis = 1000
+	}
+	if cfg.RequestMaxBodyBytes == 0 {
+		cfg.RequestMaxBodyBytes = 16 * 1024 * 1024
+	}
+	if cfg.MaxConcurrentRequests == 0 {
+		cfg.MaxConcurrentRequests = 64
+	}
+	return &Server{cfg: cfg, caClient: ca, sem: make(chan struct{}, cfg.MaxConcurrentRequests)}
 }
 
 func (s *Server) Router() http.Handler {
@@ -53,7 +84,8 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/v1beta/models", s.handleListModels)
 	mux.HandleFunc("/v1beta/models/", s.handleModel)
-	return s.withLogging(mux)
+	// Order: recover (outermost) -> logging -> concurrency limiter -> handlers
+	return s.withRecover(s.withLogging(s.withConcurrencyLimit(mux)))
 }
 
 // responseWriter wraps http.ResponseWriter to capture status code
@@ -87,6 +119,34 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 	})
 }
 
+// withRecover adds a panic recovery layer to prevent leaking stack traces
+// and to ensure a clean 500 response is sent to the client.
+func (s *Server) withRecover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				// Minimal error details; avoid stack traces or sensitive info
+				logrus.WithField("path", r.URL.Path).Errorf("panic recovered: %v", rec)
+				http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// withConcurrencyLimit adds simple server-wide concurrency limiting.
+func (s *Server) withConcurrencyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case s.sem <- struct{}{}:
+			defer func() { <-s.sem }()
+			next.ServeHTTP(w, r)
+		default:
+			http.Error(w, "too many concurrent requests", http.StatusTooManyRequests)
+		}
+	})
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -100,15 +160,17 @@ func (s *Server) authorize(r *http.Request) bool {
 	}
 	if ah := r.Header.Get("Authorization"); ah != "" {
 		const p = "Bearer "
-		if strings.HasPrefix(ah, p) && strings.TrimSpace(ah[len(p):]) == key {
-			return true
+		if strings.HasPrefix(ah, p) {
+			// Constant-time comparison to mitigate timing attacks
+			if 1 == subtle.ConstantTimeCompare([]byte(strings.TrimSpace(ah[len(p):])), []byte(key)) {
+				return true
+			}
 		}
 	}
-	if r.Header.Get("x-goog-api-key") == key {
-		return true
-	}
-	if r.URL.Query().Get("key") == key {
-		return true
+	if h := r.Header.Get("x-goog-api-key"); h != "" {
+		if 1 == subtle.ConstantTimeCompare([]byte(h), []byte(key)) {
+			return true
+		}
 	}
 	return false
 }
@@ -173,6 +235,8 @@ func (s *Server) handleGenerateContent(model string, w http.ResponseWriter, r *h
 		http.Error(w, "unknown model", http.StatusBadRequest)
 		return
 	}
+	// Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.RequestMaxBodyBytes)
 	req, err := s.decodeGeminiRequest(r)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
@@ -205,6 +269,8 @@ func (s *Server) handleStreamGenerateContent(model string, w http.ResponseWriter
 		http.Error(w, "unknown model", http.StatusBadRequest)
 		return
 	}
+	// Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, s.cfg.RequestMaxBodyBytes)
 	req, err := s.decodeGeminiRequest(r)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)

@@ -204,7 +204,11 @@ func parseSSEStream(ctx context.Context, r io.Reader, cb func(*CodeAssistEnvelop
 			// First try to parse as a generic map to detect envelope format
 			var raw map[string]json.RawMessage
 			if err := json.Unmarshal([]byte(data), &raw); err != nil {
-				logrus.Errorf("failed to unmarshal SSE data as JSON: %v, data: %s", err, data)
+				// Avoid logging raw SSE payload to prevent leaking sensitive data
+				logrus.WithFields(logrus.Fields{
+					"err":        err,
+					"data_bytes": len(data),
+				}).Error("failed to unmarshal SSE data as JSON")
 				continue
 			}
 
@@ -212,7 +216,10 @@ func parseSSEStream(ctx context.Context, r io.Reader, cb func(*CodeAssistEnvelop
 			if responseRaw, hasResponse := raw["response"]; hasResponse {
 				// Extract the response from the envelope
 				if err := json.Unmarshal(responseRaw, &response); err != nil {
-					logrus.Errorf("failed to unmarshal envelope response: %v, data: %s", err, data)
+					logrus.WithFields(logrus.Fields{
+						"err":        err,
+						"data_bytes": len(data),
+					}).Error("failed to unmarshal envelope response")
 					continue
 				}
 
@@ -226,7 +233,10 @@ func parseSSEStream(ctx context.Context, r io.Reader, cb func(*CodeAssistEnvelop
 			} else {
 				// Try to parse as raw response directly
 				if err := json.Unmarshal([]byte(data), &response); err != nil {
-					logrus.Errorf("failed to unmarshal SSE data as raw response: %v, data: %s", err, data)
+					logrus.WithFields(logrus.Fields{
+						"err":        err,
+						"data_bytes": len(data),
+					}).Error("failed to unmarshal SSE data as raw response")
 					continue
 				}
 			}

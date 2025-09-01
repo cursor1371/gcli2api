@@ -104,5 +104,9 @@ curl -X POST \
 - OAuth：通过 `geminiOauthCredsFiles` 提供凭据；运行中令牌自动刷新并可能持久化（0600 权限）。
 - API Key：配置 `authKey` 后，受保护接口需携带上述任一方式。
 
+## 致谢
+
+本项目的灵感来自 [justlovemaki/AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API)，并借鉴了其实现和配置方式。
+
 ## 已知限制
 - 目前内置可用模型为 `gemini-2.5-flash` 与 `gemini-2.5-pro`。

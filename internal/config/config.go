@@ -22,6 +22,12 @@ type Config struct {
 	// Proxy is an optional upstream proxy URL. Must be http or socks5.
 	// Example: "http://127.0.0.1:8080" or "socks5://127.0.0.1:1080"
 	Proxy string `json:"proxy"`
+	// RequestMaxBodyBytes limits incoming request size to mitigate DoS via large payloads.
+	// If zero, a safe default is applied.
+	RequestMaxBodyBytes int64 `json:"requestMaxBodyBytes"`
+	// MaxConcurrentRequests limits concurrent in-flight requests for lightweight backpressure.
+	// If zero, a default value is applied.
+	MaxConcurrentRequests int `json:"maxConcurrentRequests"`
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -67,6 +73,13 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if cfg.SQLitePath == "" {
 		cfg.SQLitePath = "./data/state.db"
+	}
+	if cfg.RequestMaxBodyBytes == 0 {
+		// 16 MiB by default
+		cfg.RequestMaxBodyBytes = 16 * 1024 * 1024
+	}
+	if cfg.MaxConcurrentRequests == 0 {
+		cfg.MaxConcurrentRequests = 64
 	}
 	return cfg, nil
 }

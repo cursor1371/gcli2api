@@ -21,10 +21,18 @@ def run_command(
     cwd: Optional[Path] = None,
     check: bool = True,
     env: Optional[Dict[str, str]] = None,
+    capture_output: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a command and return the result."""
     click.echo(f"Running: {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=cwd, check=check, capture_output=False, env=env)
+    return subprocess.run(
+        cmd,
+        cwd=cwd,
+        check=check,
+        capture_output=capture_output,
+        env=env,
+        text=capture_output,
+    )
 
 
 def calculate_sha256(file_path: Path) -> str:
@@ -136,12 +144,67 @@ def upload_release(dist_dir: str, github_token: str, github_sha: str):
     title = f"nightly-{sha7}"
 
     # Check if release exists
+    release_exists = False
     try:
-        run_command(["gh", "release", "view", tag], check=True)
-        click.echo(f"Release {tag} exists; will update assets.")
+        run_command(["gh", "release", "view", tag], check=True, capture_output=True)
+        release_exists = True
     except subprocess.CalledProcessError:
+        pass
+
+    if release_exists:
+        click.echo(f"Release {tag} exists; will update assets.")
+    else:
         # Create the release
         click.echo(f"Creating release {tag}...")
+
+        # Generate changelog
+        notes = f"Automated nightly build for commit {github_sha}"
+        try:
+            # Get latest release tag from GitHub
+            result = run_command(
+                [
+                    "gh",
+                    "release",
+                    "list",
+                    "--limit",
+                    "1",
+                    "--json",
+                    "tagName",
+                    "-q",
+                    ".[0].tagName",
+                ],
+                capture_output=True,
+                check=False,
+            )
+            last_tag = (
+                result.stdout.strip()
+                if result.returncode == 0 and result.stdout.strip()
+                else None
+            )
+
+            if last_tag:
+                click.echo(f"Found last release tag: {last_tag}")
+                log_cmd = [
+                    "git",
+                    "log",
+                    f"{last_tag}..HEAD",
+                    "--oneline",
+                    "--pretty=format:* %h %s",
+                ]
+                log_result = run_command(log_cmd, capture_output=True, check=False)
+                if log_result.returncode == 0 and log_result.stdout.strip():
+                    notes = f"## Changelog\n\n{log_result.stdout.strip()}"
+                else:
+                    click.echo(
+                        f"Could not get git log between {last_tag} and HEAD. Using default notes.",
+                        err=True,
+                    )
+            else:
+                click.echo("No previous release found. Using default notes.")
+
+        except Exception as e:
+            click.echo(f"Could not generate changelog: {e}", err=True)
+
         run_command(
             [
                 "gh",
@@ -151,7 +214,7 @@ def upload_release(dist_dir: str, github_token: str, github_sha: str):
                 "--title",
                 title,
                 "--notes",
-                f"Automated nightly build for commit {github_sha}",
+                notes,
                 "--prerelease",
             ]
         )

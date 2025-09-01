@@ -9,5 +9,6 @@
   "requestMaxRetries": 2,
   "requestBaseDelay": 1000,
   "sqlitePath": "./data/state.db",
-  "proxy": "http://127.0.0.1:9999"
+  "requestMaxBodyBytes": 16777216,
+  "maxConcurrentRequests": 64
 }

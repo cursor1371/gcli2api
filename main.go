@@ -22,8 +22,8 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-// OAuth client constants (match Node implementation)
 const (
+	// These are public values, not secrets
 	oauthClientID     = "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
 	oauthClientSecret = "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"
 )
@@ -35,7 +35,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:          "gemini-cli-2api",
-		Short:        "Gemini Code Assist compatible HTTP API",
+		Short:        "Gemini Cli To HTTP API",
 		SilenceUsage: true,
 	}
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "config.json", "Path to config file")
@@ -78,6 +78,7 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("invalid proxy URL: %w", err)
 				}
+				logrus.Infof("using upstream proxy: %s", cfg.Proxy)
 				proxyURL = u
 				go func(u *url.URL) {
 					host := u.Host
@@ -155,8 +156,8 @@ func main() {
 				Addr:              addr,
 				Handler:           srv.Router(),
 				ReadHeaderTimeout: 10 * time.Second,
-				ReadTimeout:       0,
-				WriteTimeout:      0,
+				ReadTimeout:       10 * time.Minute,
+				WriteTimeout:      10 * time.Minute,
 				IdleTimeout:       120 * time.Second,
 				ErrorLog:          log.New(logrus.StandardLogger().WriterLevel(logrus.ErrorLevel), "http: ", 0),
 			}
@@ -171,11 +172,6 @@ func main() {
 
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(checkCmd)
-
-	// default to `server` if no subcommand provided for backward compatibility
-	if len(os.Args) == 1 {
-		os.Args = append(os.Args, "server")
-	}
 
 	if err := rootCmd.Execute(); err != nil {
 		logrus.Fatalf("%v", err)
