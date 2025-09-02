@@ -223,8 +223,8 @@ func (mc *MultiClient) getOrDiscoverProjectID(ctx context.Context, e *entry) (st
 	if err != nil {
 		return "", err
 	}
-	if pid == "" || pid == "default" {
-		return "", fmt.Errorf("invalid discovered project id: %q", pid)
+	if pid == "" {
+		return "", fmt.Errorf("fail to discovered project")
 	}
 	e.projectID.Store(pid)
 	if mc.store != nil {
