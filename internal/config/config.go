@@ -2,13 +2,15 @@ package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
+	"strings"
 
 	"github.com/sirupsen/logrus"
+	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 )
 
 type Config struct {
@@ -37,24 +39,50 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return cfg, fmt.Errorf("read config: %w", err)
 	}
-	dec := json.NewDecoder(bytes.NewReader(b))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&cfg); err != nil {
-		// Try to extract unknown field name from the error and surface just the key
-		// Typical error: "json: unknown field \"foo\""
-		var se *json.SyntaxError
+	// First pass: decode to a generic map to detect unknown keys (JSON5 allows comments etc.).
+	var raw map[string]any
+	if err := json5.NewDecoder(bytes.NewReader(b)).Decode(&raw); err != nil {
+		// Surface syntax errors as parse errors
+		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+	// Allowed top-level keys derived from Config struct tags
+	allowed := map[string]struct{}{}
+	allowedLower := map[string]struct{}{}
+	ct := reflect.TypeOf(cfg)
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		tag := f.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			// Still allow matching by field name
+			name := f.Name
+			allowed[name] = struct{}{}
+			allowedLower[strings.ToLower(name)] = struct{}{}
+			continue
+		}
+		name := strings.Split(tag, ",")[0]
+		if name == "" {
+			name = f.Name
+		}
+		allowed[name] = struct{}{}
+		allowedLower[strings.ToLower(name)] = struct{}{}
+		// Also allow using the exported field name directly (case-insensitive)
+		allowed[f.Name] = struct{}{}
+		allowedLower[strings.ToLower(f.Name)] = struct{}{}
+	}
+	for k := range raw {
+		if _, ok := allowed[k]; ok {
+			continue
+		}
+		if _, ok := allowedLower[strings.ToLower(k)]; !ok {
+			return cfg, fmt.Errorf("unknown config key: %s", k)
+		}
+	}
+	// Second pass: decode into the strongly-typed struct.
+	if err := json5.NewDecoder(bytes.NewReader(b)).Decode(&cfg); err != nil {
+		// Keep error semantics consistent
+		var se *json5.SyntaxError
 		if !errors.As(err, &se) {
-			msg := err.Error()
-			const p = "json: unknown field \""
-			if i := bytes.Index([]byte(msg), []byte(p)); i >= 0 {
-				// Extract between quotes
-				start := i + len(p)
-				rest := msg[start:]
-				if j := bytes.IndexByte([]byte(rest), '"'); j >= 0 {
-					unknown := rest[:j]
-					return cfg, fmt.Errorf("unknown config key: %s", unknown)
-				}
-			}
+			return cfg, fmt.Errorf("parse config: %w", err)
 		}
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
