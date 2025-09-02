@@ -90,7 +90,7 @@ go build -o gcli2api .
 - `port`（默认 `8085`）
 - `authKey`（可选，若为占位符 `UNSAFE-KEY-REPLACE` 则校验失败）
 - `geminiOauthCredsFiles`：凭据文件路径数组（必填）
-- `projectIds`：可选。以“凭据文件路径”为键、以“Project ID 数组”为值的映射。键会进行 `~` 展开（不解析符号链接），并且必须与 `geminiOauthCredsFiles` 中的某一项完全匹配；否则 `check` 会失败。若某个键对应的数组为空，则视为未配置、回退到自动发现。
+- `projectIds`：可选。以“凭据文件路径”为键、以“Project ID 数组”为值的映射。键会进行 `~` 展开（不解析符号链接），并且必须与 `geminiOauthCredsFiles` 中的某一项完全匹配；否则 `check` 会失败。若某个键对应的数组为空，则视为未配置、回退到自动发现。若数组中包含特殊标记 `"_auto"`，表示除显式列出的项目外，还应加入一个“自动发现”的项目单元。
 - `requestMaxRetries`（默认 `3`）
 - `requestBaseDelay`（毫秒，默认 `1000`）
 - `sqlitePath`（默认 `./data/state.db`）
@@ -127,7 +127,7 @@ go build -o gcli2api .
 - 回退策略：
   - 未出现在 `projectIds` 的凭据，继续使用自动发现 Project ID，并将结果缓存到 SQLite。
   - 若某个键的数组为空，则记录警告并回退到自动发现（等价于未配置）。
-  - 若某个凭据配置了 `projectIds`，系统还会额外将“自动发现的 Project ID” 作为一个独立轮询单元加入列表（与手动列出的项目一并轮询）。
+  - 若某个凭据的 `projectIds` 数组包含特殊标记 `"_auto"`，则额外加入一个“自动发现的 Project ID” 轮询单元；若未包含该标记，则仅使用显式列出的项目。
 - 校验：`gcli2api check -c ./config.json` 会在以下情况下失败：
   - `projectIds` 中存在经 `~` 展开后无法与 `geminiOauthCredsFiles` 精确匹配的键。
 - 重试/轮换策略保持不变：遇到 `401/429` 时在轮询单元间切换；其它错误不触发轮换。
@@ -140,14 +140,14 @@ go build -o gcli2api .
     "~/.gemini_account2/oauth_creds.json"
   ],
   "projectIds": {
-    "~/.gemini_account1/oauth_creds.json": ["project-id1", "project-id2"]
+    "~/.gemini_account1/oauth_creds.json": ["_auto", "project-id1", "project-id2"]
   }
 }
 ```
 
 上面这个配置:
-- 对于 account1 会使用指定的两个 project id + 自动发现的 project id
-- 对于 account2 会使用自动发现的 project id
+- 对于 account1 会使用自动发现的 project id 以及显式指定的两个 project id
+- 对于 account2（未在 projectIds 中出现）会使用自动发现的 project id
 
 ## API 约定与请求格式
 - 模型名：`gemini-2.5-flash`、`gemini-2.5-pro`

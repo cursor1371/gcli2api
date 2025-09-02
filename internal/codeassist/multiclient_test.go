@@ -89,8 +89,8 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init multiclient: %v", err)
 	}
-	if len(mc.entries) != 3 {
-		t.Fatalf("expected 3 entries (2 configured + 1 discovery), got %d", len(mc.entries))
+	if len(mc.entries) != 2 {
+		t.Fatalf("expected 2 entries (2 configured, no discovery), got %d", len(mc.entries))
 	}
 
 	// entry[0] should send project p1 and return 401; entry[1] should send p2 and return 200
@@ -123,6 +123,63 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 	}
 	if attempts[0] != 1 || attempts[1] != 1 {
 		t.Fatalf("expected attempts [1,1], got %v", attempts)
+	}
+}
+
+// When projectIds includes the special token "_auto", include a discovery-based unit
+// in addition to any explicit project ids.
+func TestMultiClient_ProjectUnits_WithAuto_DiscoveryIncluded(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+	}
+	projectMap := map[string][]string{
+		"a.json": {"_auto", "p1"},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, projectMap)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	if len(mc.entries) != 2 {
+		t.Fatalf("expected 2 entries (1 configured + 1 discovery), got %d", len(mc.entries))
+	}
+	// Validate that exactly one entry has a pre-set projectID (p1) and the other is discovery-based
+	configured := 0
+	discovery := 0
+	for _, e := range mc.entries {
+		if v := e.projectID.Load(); v != nil {
+			if s, ok := v.(string); ok && s != "" {
+				configured++
+				continue
+			}
+		}
+		discovery++
+	}
+	if configured != 1 || discovery != 1 {
+		t.Fatalf("expected 1 configured and 1 discovery entry, got configured=%d discovery=%d", configured, discovery)
+	}
+}
+
+// When projectIds is ["_auto"] only, we include just one discovery-based unit.
+func TestMultiClient_ProjectUnits_AutoOnly(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+	}
+	projectMap := map[string][]string{
+		"a.json": {"_auto"},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, projectMap)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	if len(mc.entries) != 1 {
+		t.Fatalf("expected 1 entry (discovery only), got %d", len(mc.entries))
+	}
+	if v := mc.entries[0].projectID.Load(); v != nil {
+		if s, ok := v.(string); ok && s != "" {
+			t.Fatalf("expected discovery entry with empty projectID, got %q", s)
+		}
 	}
 }
 

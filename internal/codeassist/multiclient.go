@@ -81,18 +81,25 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 				mc.entries = append(mc.entries, e)
 				idx++
 			} else {
-				// Configured projects: create one unit per project
+				// Configured projects: create one unit per explicit project id
+				// and include a discovery-based unit only if "_auto" is present.
+				includeAuto := false
 				for _, pid := range units {
+					if pid == "_auto" {
+						includeAuto = true
+						continue
+					}
 					e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
 					e.projectID.Store(pid)
 					mc.entries = append(mc.entries, e)
 					idx++
 				}
-				// Also include an additional discovery-based unit for this credential
-				// so that the auto-discovered project is part of rotation.
-				e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
-				mc.entries = append(mc.entries, e)
-				idx++
+				if includeAuto {
+					// Add one discovery-based unit for this credential
+					e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
+					mc.entries = append(mc.entries, e)
+					idx++
+				}
 			}
 		} else {
 			e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
@@ -244,6 +251,7 @@ func (mc *MultiClient) getOrDiscoverProjectID(ctx context.Context, e *entry) (st
 		}
 	}
 	// Discover via client
+	logrus.Infof("[MultiClient] project id not found in cache for %s, attempting discovery", e.displayName())
 	pid, err := e.ca.DiscoverProjectID(ctx)
 	if err != nil {
 		return "", err
