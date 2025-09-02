@@ -90,6 +90,7 @@ go build -o gcli2api .
 - `port`（默认 `8085`）
 - `authKey`（可选，若为占位符 `UNSAFE-KEY-REPLACE` 则校验失败）
 - `geminiOauthCredsFiles`：凭据文件路径数组（必填）
+- `projectIds`：可选。以“凭据文件路径”为键、以“Project ID 数组”为值的映射。键会进行 `~` 展开（不解析符号链接），并且必须与 `geminiOauthCredsFiles` 中的某一项完全匹配；否则 `check` 会失败。若某个键对应的数组为空，则视为未配置、回退到自动发现。
 - `requestMaxRetries`（默认 `3`）
 - `requestBaseDelay`（毫秒，默认 `1000`）
 - `sqlitePath`（默认 `./data/state.db`）
@@ -108,11 +109,44 @@ go build -o gcli2api .
     "~/.gemini_account1/oauth_creds.json",
     "~/.gemini_account2/oauth_creds.json"
   ],
+  "projectIds": {
+    "~/.gemini_account1/oauth_creds.json": ["project-id1", "project-id2"]
+  },
   "requestMaxRetries": 2,
   "requestBaseDelay": 1000,
   "sqlitePath": "./data/state.db"
 }
 ```
+
+## 按凭据指定 Project ID（projectIds）
+
+- 用法：在 `config.json` 中新增 `projectIds` 字段，为映射类型：
+  - 键：凭据文件路径（支持 `~` 展开，不解析符号链接）。
+  - 值：该凭据下要使用的一个或多个 Project ID（有序）。
+- 负载均衡：每个 “(凭据, Project ID)” 组合视为独立的轮询单元；相同凭据的多个项目共享同一 HTTP/OAuth 客户端。
+- 回退策略：
+  - 未出现在 `projectIds` 的凭据，继续使用自动发现 Project ID，并将结果缓存到 SQLite。
+  - 若某个键的数组为空，则记录警告并回退到自动发现（等价于未配置）。
+- 校验：`gcli2api check -c ./config.json` 会在以下情况下失败：
+  - `projectIds` 中存在经 `~` 展开后无法与 `geminiOauthCredsFiles` 精确匹配的键。
+- 重试/轮换策略保持不变：遇到 `401/429` 时在轮询单元间切换；其它错误不触发轮换。
+
+示例:
+```json
+{
+  "geminiOauthCredsFiles": [
+    "~/.gemini_account1/oauth_creds.json",
+    "~/.gemini_account2/oauth_creds.json"
+  ],
+  "projectIds": {
+    "~/.gemini_account1/oauth_creds.json": ["project-id1", "project-id2"]
+  }
+}
+```
+
+上面这个配置:
+- 对于 account1 会使用指定的两个 project id
+- 对于 account2 会使用自动发现的 project id
 
 ## API 约定与请求格式
 - 模型名：`gemini-2.5-flash`、`gemini-2.5-pro`
