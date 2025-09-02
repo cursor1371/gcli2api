@@ -2,6 +2,7 @@ package codeassist
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -20,7 +21,7 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
 		{Path: "b.json", Raw: auth.RawToken{AccessToken: "xb", RefreshToken: "rb"}, Persist: false},
 	}
-	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil)
+	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("init multiclient: %v", err)
 	}
@@ -73,4 +74,71 @@ func TestMultiClient_RotationPolicy_Unary(t *testing.T) {
 			t.Fatalf("expected attempts [1,0], got %v", attempts)
 		}
 	})
+}
+
+// New behavior: per-credential project units and rotation across them.
+func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+	}
+	projectMap := map[string][]string{
+		"a.json": {"p1", "p2"},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, projectMap)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	if len(mc.entries) != 2 {
+		t.Fatalf("expected 2 entries (units), got %d", len(mc.entries))
+	}
+
+	// entry[0] should send project p1 and return 401; entry[1] should send p2 and return 200
+	attempts := []int{0, 0}
+	mc.entries[0].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		attempts[0]++
+		var body CodeAssistRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Project != "p1" {
+			t.Errorf("entry 0 expected project p1, got %q", body.Project)
+		}
+		return resp(401, "unauthorized", "text/plain"), nil
+	})), 0, 1*time.Millisecond)
+	mc.entries[1].ca = NewClient(mkClient(rtFunc(func(r *http.Request) (*http.Response, error) {
+		attempts[1]++
+		var body CodeAssistRequest
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Project != "p2" {
+			t.Errorf("entry 1 expected project p2, got %q", body.Project)
+		}
+		return resp(200, `{"response": {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}}`, "application/json"), nil
+	})), 0, 1*time.Millisecond)
+
+	g, err := mc.GenerateContent(context.Background(), "gemini-2.5-flash", "", gemini.GeminiRequest{Contents: []gemini.GeminiContent{{Role: "user", Parts: []gemini.GeminiPart{{Text: "hi"}}}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(g.Candidates) == 0 || len(g.Candidates[0].Content.Parts) == 0 || g.Candidates[0].Content.Parts[0].Text != "ok" {
+		t.Fatalf("bad response: %+v", g)
+	}
+	if attempts[0] != 1 || attempts[1] != 1 {
+		t.Fatalf("expected attempts [1,1], got %v", attempts)
+	}
+}
+
+func TestMultiClient_EmptyProjectList_FallsBackToDiscovery(t *testing.T) {
+	oauthCfg := oauth2.Config{ClientID: "test", ClientSecret: "s", Scopes: []string{"s"}, Endpoint: google.Endpoint}
+	sources := []CredSource{
+		{Path: "a.json", Raw: auth.RawToken{AccessToken: "xa", RefreshToken: "ra"}, Persist: false},
+	}
+	projectMap := map[string][]string{
+		"a.json": {},
+	}
+	mc, err := NewMultiClient(oauthCfg, sources, 0, 1*time.Millisecond, nil, nil, projectMap)
+	if err != nil {
+		t.Fatalf("init multiclient: %v", err)
+	}
+	if len(mc.entries) != 1 {
+		t.Fatalf("expected 1 entry (discovery fallback), got %d", len(mc.entries))
+	}
 }

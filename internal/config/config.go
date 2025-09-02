@@ -14,13 +14,18 @@ import (
 )
 
 type Config struct {
-	Host                   string   `json:"host"`
-	ServerPort             int      `json:"port"`
-	AuthKey                string   `json:"authKey"`
-	GeminiCredsFilePaths   []string `json:"geminiOauthCredsFiles"`
-	RequestMaxRetries      int      `json:"requestMaxRetries"`
-	RequestBaseDelayMillis int      `json:"requestBaseDelay"`
-	SQLitePath             string   `json:"sqlitePath"`
+	Host                 string   `json:"host"`
+	ServerPort           int      `json:"port"`
+	AuthKey              string   `json:"authKey"`
+	GeminiCredsFilePaths []string `json:"geminiOauthCredsFiles"`
+	// ProjectIds maps a credential path to an ordered list of project IDs.
+	// Keys must match one of the entries in geminiOauthCredsFiles after ~ expansion.
+	// If a key exists with an empty list, it is treated as not configured and
+	// discovery will be used for that credential.
+	ProjectIds             map[string][]string `json:"projectIds"`
+	RequestMaxRetries      int                 `json:"requestMaxRetries"`
+	RequestBaseDelayMillis int                 `json:"requestBaseDelay"`
+	SQLitePath             string              `json:"sqlitePath"`
 	// Proxy is an optional upstream proxy URL. Must be http or socks5.
 	// Example: "http://127.0.0.1:8080" or "socks5://127.0.0.1:1080"
 	Proxy string `json:"proxy"`
@@ -136,5 +141,46 @@ func (c Config) Validate(cfgPath string) error {
 			return fmt.Errorf("proxy URL must include host:port")
 		}
 	}
+	// Validate that projectIds keys (after ~ expansion) match one of the
+	// configured credential paths (also after ~ expansion). Do not resolve symlinks.
+	if len(c.ProjectIds) > 0 {
+		// Build set of expanded credential paths
+		expanded := make(map[string]struct{}, len(c.GeminiCredsFilePaths))
+		for _, p := range c.GeminiCredsFilePaths {
+			if p == "" {
+				continue
+			}
+			xp, err := expandUser(p)
+			if err != nil {
+				return fmt.Errorf("expand creds path %q: %w", p, err)
+			}
+			expanded[xp] = struct{}{}
+		}
+		// Validate each projectIds key
+		for k := range c.ProjectIds {
+			xp, err := expandUser(k)
+			if err != nil {
+				return fmt.Errorf("expand projectIds key %q: %w", k, err)
+			}
+			if _, ok := expanded[xp]; !ok {
+				return fmt.Errorf("projectIds key %q does not match any geminiOauthCredsFiles entry", k)
+			}
+		}
+	}
 	return nil
+}
+
+// expandUser mirrors internal/utils.ExpandUser without importing utils to avoid cycles.
+func expandUser(path string) (string, error) {
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return home + string(os.PathSeparator) + strings.TrimPrefix(path, "~/"), nil
+	}
+	return path, nil
 }

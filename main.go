@@ -15,6 +15,7 @@ import (
 	"gcli2api/internal/config"
 	"gcli2api/internal/server"
 	"gcli2api/internal/state"
+	"gcli2api/internal/utils"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -142,8 +143,19 @@ func main() {
 				logrus.Warnf("SQLite open error (using memory-only cache): %v", err)
 			}
 
+			// Normalize projectIds map keys via ~ expansion only (no symlink resolution)
+			normalizedProjectMap := make(map[string][]string)
+			for k, v := range cfg.ProjectIds {
+				xp, err := utils.ExpandUser(k)
+				if err != nil {
+					// Should have been validated; continue with raw key on error
+					xp = k
+				}
+				normalizedProjectMap[xp] = v
+			}
+
 			// Build MultiClient (works for both single and multi-cred cases)
-			mc, err := codeassist.NewMultiClient(oauthCfg, sources, cfg.RequestMaxRetries, time.Duration(cfg.RequestBaseDelayMillis)*time.Millisecond, st, proxyURL)
+			mc, err := codeassist.NewMultiClient(oauthCfg, sources, cfg.RequestMaxRetries, time.Duration(cfg.RequestBaseDelayMillis)*time.Millisecond, st, proxyURL, normalizedProjectMap)
 			if err != nil {
 				return fmt.Errorf("failed to init client: %w", err)
 			}

@@ -52,7 +52,8 @@ type entry struct {
 }
 
 // NewMultiClient constructs a MultiClient. It does not perform network calls.
-func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, baseDelay time.Duration, st *state.Store, proxyURL *url.URL) (*MultiClient, error) {
+// projectMap maps expanded credential paths to ordered project IDs to use.
+func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, baseDelay time.Duration, st *state.Store, proxyURL *url.URL, projectMap map[string][]string) (*MultiClient, error) {
 	mc := &MultiClient{
 		store:    st,
 		provider: "gemini-cli-oauth",
@@ -64,7 +65,8 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		baseDelay: baseDelay,
 		proxyURL:  proxyURL,
 	}
-	for i, src := range sources {
+	idx := 0
+	for _, src := range sources {
 		// Build a TokenSource without forcing network calls.
 		baseTS := oauthCfg.TokenSource(context.Background(), src.Raw.ToOAuth2Token())
 		ts := auth.NewPersistingTokenSource(baseTS, src.Raw, src.Path, src.Persist)
@@ -72,8 +74,25 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		ca := mc.mkClient(httpCli, retries, baseDelay)
 		identity := src.Raw.RefreshToken
 		tokenKey := state.ComputeTokenKey(mc.provider, mc.clientID, identity)
-		e := &entry{idx: i, path: src.Path, tokenKey: tokenKey, ca: ca}
-		mc.entries = append(mc.entries, e)
+		if units, ok := projectMap[src.Path]; ok {
+			if len(units) == 0 {
+				logrus.Warnf("[MultiClient] empty projectIds list for credential %s; falling back to discovery", src.Path)
+				e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
+				mc.entries = append(mc.entries, e)
+				idx++
+			} else {
+				for _, pid := range units {
+					e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
+					e.projectID.Store(pid)
+					mc.entries = append(mc.entries, e)
+					idx++
+				}
+			}
+		} else {
+			e := &entry{idx: idx, path: src.Path, tokenKey: tokenKey, ca: ca}
+			mc.entries = append(mc.entries, e)
+			idx++
+		}
 	}
 	if len(mc.entries) == 0 {
 		return nil, fmt.Errorf("no valid credentials provided")
@@ -85,7 +104,7 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 			atomic.StoreUint64(&mc.rr, v)
 		}
 	}
-	logrus.Infof("[MultiClient] initialized with %d credential(s)", len(mc.entries))
+	logrus.Infof("[MultiClient] initialized with %d credential(s) and %d unit(s)", len(sources), len(mc.entries))
 	return mc, nil
 }
 
@@ -124,21 +143,21 @@ func (mc *MultiClient) GenerateContent(ctx context.Context, model, project strin
 			prj = pid
 		}
 		credName := e.displayName()
-		logrus.Infof("[MultiClient] attempt=%d idx=%d cred=%s model=%s", i+1, e.idx, credName, model)
+		logrus.Infof("[MultiClient] attempt=%d idx=%d cred=%s model=%s project=%s", i+1, e.idx, credName, model, prj)
 		resp, err := e.ca.GenerateContent(ctx, model, prj, req)
 		if err == nil {
-			logrus.Infof("[MultiClient] status=ok idx=%d cred=%s", e.idx, credName)
+			logrus.Infof("[MultiClient] status=ok idx=%d cred=%s project=%s", e.idx, credName, prj)
 			return resp, nil
 		}
 		lastErr = err
 		// Rotate only on 401/429
 		es := err.Error()
 		if strings.Contains(es, "status 401") || strings.Contains(es, "status 429") {
-			logrus.Warnf("[MultiClient] rotating on error idx=%d cred=%s err=%v", e.idx, credName, err)
+			logrus.Warnf("[MultiClient] rotating on error idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
 			continue
 		}
 		// Return immediately for other errors
-		logrus.Warnf("[MultiClient] non-rotating error idx=%d cred=%s err=%v", e.idx, credName, err)
+		logrus.Warnf("[MultiClient] non-rotating error idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
 		return nil, err
 	}
 	return nil, lastErr
@@ -167,7 +186,7 @@ func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project
 			prj = pid
 		}
 		credName := e.displayName()
-		logrus.Infof("[MultiClient] streaming idx=%d cred=%s model=%s", e.idx, credName, model)
+		logrus.Infof("[MultiClient] streaming idx=%d cred=%s model=%s project=%s", e.idx, credName, model, prj)
 		upOut, upErrs := e.ca.GenerateContentStream(ctx, model, prj, req)
 		for {
 			select {
