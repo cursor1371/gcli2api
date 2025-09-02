@@ -127,6 +127,7 @@ go build -o gcli2api .
 - 回退策略：
   - 未出现在 `projectIds` 的凭据，继续使用自动发现 Project ID，并将结果缓存到 SQLite。
   - 若某个键的数组为空，则记录警告并回退到自动发现（等价于未配置）。
+  - 若某个凭据配置了 `projectIds`，系统还会额外将“自动发现的 Project ID” 作为一个独立轮询单元加入列表（与手动列出的项目一并轮询）。
 - 校验：`gcli2api check -c ./config.json` 会在以下情况下失败：
   - `projectIds` 中存在经 `~` 展开后无法与 `geminiOauthCredsFiles` 精确匹配的键。
 - 重试/轮换策略保持不变：遇到 `401/429` 时在轮询单元间切换；其它错误不触发轮换。
@@ -145,7 +146,7 @@ go build -o gcli2api .
 ```
 
 上面这个配置:
-- 对于 account1 会使用指定的两个 project id
+- 对于 account1 会使用指定的两个 project id + 自动发现的 project id
 - 对于 account2 会使用自动发现的 project id
 
 ## API 约定与请求格式

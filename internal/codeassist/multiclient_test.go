@@ -89,8 +89,8 @@ func TestMultiClient_ProjectUnits_RoundRobin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init multiclient: %v", err)
 	}
-	if len(mc.entries) != 2 {
-		t.Fatalf("expected 2 entries (units), got %d", len(mc.entries))
+	if len(mc.entries) != 3 {
+		t.Fatalf("expected 3 entries (2 configured + 1 discovery), got %d", len(mc.entries))
 	}
 
 	// entry[0] should send project p1 and return 401; entry[1] should send p2 and return 200
