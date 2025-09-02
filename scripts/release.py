@@ -10,7 +10,9 @@ import sys
 import zipfile
 import tarfile
 import hashlib
+import json
 from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 from typing import List, Optional, Dict
 
@@ -232,6 +234,58 @@ def upload_release(dist_dir: str, github_token: str, github_sha: str):
     run_command(["gh", "release", "upload", tag, "--clobber"] + asset_paths)
 
     click.echo(f"Successfully uploaded {len(asset_paths)} assets to release {tag}")
+
+    # Cleanup old nightly releases (best-effort; failures are ignored)
+    try:
+        click.echo("Cleaning up old nightly releases (best-effort)...")
+        list_result = run_command(
+            [
+                "gh",
+                "release",
+                "list",
+                "--limit",
+                "200",
+                "--json",
+                "tagName,publishedAt,isPrerelease",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if list_result.returncode != 0 or not list_result.stdout.strip():
+            click.echo("Cleanup skipped: failed to list releases.", err=True)
+        else:
+            releases = json.loads(list_result.stdout)
+            nightly = [
+                r
+                for r in releases
+                if isinstance(r.get("tagName"), str)
+                and r["tagName"].startswith("nightly-")
+                and r.get("publishedAt")
+            ]
+            for r in nightly:
+                try:
+                    r["_published_dt"] = datetime.strptime(
+                        r["publishedAt"], "%Y-%m-%dT%H:%M:%SZ"
+                    )
+                except Exception:
+                    r["_published_dt"] = None
+            nightly = [r for r in nightly if r.get("_published_dt") is not None]
+            nightly.sort(key=lambda r: r["_published_dt"], reverse=True)
+
+            cutoff = datetime.utcnow() - timedelta(days=7)
+            victims = [r for r in nightly[10:] if r["_published_dt"] < cutoff]
+
+            if victims:
+                click.echo(f"Deleting {len(victims)} old nightly releases...")
+            for r in victims:
+                tag_to_delete = r["tagName"]
+                try:
+                    run_command(["gh", "release", "delete", tag_to_delete, "--yes"], check=True)
+                    click.echo(f"Deleted nightly release {tag_to_delete}")
+                except Exception as e:
+                    click.echo(f"Failed to delete nightly release {tag_to_delete}: {e}", err=True)
+    except Exception as e:
+        click.echo(f"Nightly cleanup encountered an error and was ignored: {e}", err=True)
 
 
 if __name__ == "__main__":
