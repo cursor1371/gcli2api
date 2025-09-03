@@ -43,3 +43,6 @@ RUN apk --no-cache add ca-certificates
 
 # 从构建阶段复制编译好的二进制文件
 COPY --from=builder /out/gcli2api /app/gcli2api
+# 复制启动脚本并赋予执行权限
+COPY render-start.sh /app/render-start.sh
+RUN chmod +x /app/render-start.sh
