@@ -213,7 +213,7 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) validateModel(model string) bool {
 	switch model {
-	case "gemini-2.5-flash", "gemini-2.5-pro":
+	case "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-pro-preview-06-05", "gemini-2.5-pro-preview-05-06":
 		return true
 	default:
 		return false
@@ -403,6 +403,13 @@ func listModels() interface{} {
 	return map[string]interface{}{
 		"models": []model{
 			{
+				Name:                       "models/gemini-2.5-pro",
+				Version:                    "001",
+				DisplayName:                "Gemini 2.5 Pro",
+				Description:                "Accurate multimodal generation",
+				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			},
+			{
 				Name:                       "models/gemini-2.5-flash",
 				Version:                    "001",
 				DisplayName:                "Gemini 2.5 Flash",
@@ -410,9 +417,16 @@ func listModels() interface{} {
 				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
 			},
 			{
-				Name:                       "models/gemini-2.5-pro",
+				Name:                       "models/gemini-2.5-pro-preview-06-05",
 				Version:                    "001",
-				DisplayName:                "Gemini 2.5 Pro",
+				DisplayName:                "Gemini 2.5 Pro Preview (06-05)",
+				Description:                "Accurate multimodal generation",
+				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
+			},
+			{
+				Name:                       "models/gemini-2.5-pro-preview-05-06",
+				Version:                    "001",
+				DisplayName:                "Gemini 2.5 Pro Preview (05-06)",
 				Description:                "Accurate multimodal generation",
 				SupportedGenerationMethods: []string{"generateContent", "streamGenerateContent"},
 			},
