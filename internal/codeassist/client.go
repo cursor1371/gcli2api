@@ -13,6 +13,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"gcli2api/internal/config"
 	"gcli2api/internal/gemini"
 	"gcli2api/internal/httpx"
 	// "gcli2api/internal/utils"
@@ -21,7 +22,7 @@ import (
 const (
 	BaseURL   = "https://cloudcode-pa.googleapis.com"
 	APIVer    = "v1internal"
-	UserAgent = "aiclient2api-go/1.0"
+	DefaultUA = "google-api-nodejs-client/9.15.1"
 )
 
 type CodeAssistRequest struct {
@@ -34,18 +35,21 @@ type CodeAssistEnvelope struct {
 	Response *gemini.GeminiAPIResponse `json:"response"`
 }
 
-type Client struct {
+type CaClient struct {
 	httpClient *http.Client
 	baseURL    string
-	retries    int
-	baseDelay  time.Duration
+	// transportRetries are used only for lightweight JSON helper calls
+	// such as discovery/onboarding. Generation endpoints do not use
+	// per-unit HTTP retries; MultiClient orchestrates retries across units.
+	transportRetries int
+	baseDelay        time.Duration
 }
 
-func NewClient(httpClient *http.Client, retries int, baseDelay time.Duration) *Client {
-	return &Client{httpClient: httpClient, baseURL: BaseURL, retries: retries, baseDelay: baseDelay}
+func NewCaClient(httpClient *http.Client, transportRetries int, baseDelay time.Duration) *CaClient {
+	return &CaClient{httpClient: httpClient, baseURL: BaseURL, transportRetries: transportRetries, baseDelay: baseDelay}
 }
 
-func (c *Client) GenerateContent(ctx context.Context, model, project string, req gemini.GeminiRequest) (*gemini.GeminiAPIResponse, error) {
+func (c *CaClient) GenerateContent(ctx context.Context, model, project string, req gemini.GeminiRequest) (*gemini.GeminiAPIResponse, error) {
 	url := fmt.Sprintf("%s/%s:generateContent", c.baseURL, APIVer)
 	logrus.Debugf("new request %s", url)
 	body := CodeAssistRequest{Model: model, Project: project, Request: req}
@@ -53,55 +57,37 @@ func (c *Client) GenerateContent(ctx context.Context, model, project string, req
 	if err != nil {
 		return nil, err
 	}
-	var out *gemini.GeminiAPIResponse
-	var lastErr error
-	err = httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
-		if err != nil {
-			return err
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("User-Agent", UserAgent)
-
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			return err
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// Envelope
-			var env CodeAssistEnvelope
-			dec := json.NewDecoder(resp.Body)
-			if err := dec.Decode(&env); err != nil {
-				lastErr = err
-				return err
-			}
-			if env.Response == nil {
-				lastErr = fmt.Errorf("empty response envelope")
-				return lastErr
-			}
-			out = env.Response
-			return nil
-		}
-		// Non-2xx
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		lastErr = fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
-		// Retry policy on 401/429/5xx
-		if resp.StatusCode == 401 || resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode <= 599) {
-			return lastErr
-		}
-		// Don't retry other 4xx
-		return nil
-	})
-	if err != nil && out == nil {
-		return nil, lastErr
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("User-Agent", config.UserAgent)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// Envelope
+		var env CodeAssistEnvelope
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&env); err != nil {
+			return nil, err
+		}
+		if env.Response == nil {
+			return nil, fmt.Errorf("empty response envelope")
+		}
+		return env.Response, nil
+	}
+	// Non-2xx
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return nil, fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
 }
 
 // StreamClient returns a channel of responses and an error channel.
-func (c *Client) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
+func (c *CaClient) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
 	out := make(chan gemini.GeminiAPIResponse, 16)
 	errs := make(chan error, 1)
 	go func() {
@@ -114,56 +100,46 @@ func (c *Client) GenerateContentStream(ctx context.Context, model, project strin
 			errs <- err
 			return
 		}
-		var lastErr error
-		err = httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
-			if err != nil {
-				lastErr = err
-				return err
-			}
-			httpReq.Header.Set("Content-Type", "application/json")
-			httpReq.Header.Set("Accept", "text/event-stream")
-			httpReq.Header.Set("User-Agent", UserAgent)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
+		if err != nil {
+			errs <- err
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("User-Agent", config.UserAgent)
 
-			resp, err := c.httpClient.Do(httpReq)
-			if err != nil {
-				lastErr = err
-				return err
-			}
-			defer resp.Body.Close()
-			// logrus.Infof("response received, status = %d", resp.StatusCode)
-			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-				b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-				lastErr = fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
-				logrus.Warnf("error response: %v", lastErr)
-				if resp.StatusCode == 401 || resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode <= 599) {
-					return lastErr
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer resp.Body.Close()
+		// logrus.Infof("response received, status = %d", resp.StatusCode)
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			err := fmt.Errorf("upstream status %d: %s", resp.StatusCode, string(b))
+			logrus.Warnf("error response: %v", err)
+			errs <- err
+			return
+		}
+		// Use manual SSE parsing similar to internal/sse if needed; upstream returns SSE with data: envelopes.
+		// Here, mimic with a small scanner over lines.
+		// Simpler: reuse sse.Parse by wrapping response
+		type envelope = CodeAssistEnvelope
+		readErr := parseSSEStream(ctx, resp.Body, func(env *envelope) error {
+			if env != nil && env.Response != nil {
+				select {
+				case out <- *env.Response:
+				case <-ctx.Done():
+					return ctx.Err()
 				}
-				// Non-retryable
-				return nil
-			}
-			// Use manual SSE parsing similar to internal/sse if needed; upstream returns SSE with data: envelopes.
-			// Here, mimic with a small scanner over lines.
-			// Simpler: reuse sse.Parse by wrapping response
-			type envelope = CodeAssistEnvelope
-			readErr := parseSSEStream(ctx, resp.Body, func(env *envelope) error {
-				if env != nil && env.Response != nil {
-					select {
-					case out <- *env.Response:
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				}
-				return nil
-			})
-			if readErr != nil && readErr != io.EOF {
-				lastErr = readErr
-				return readErr
 			}
 			return nil
 		})
-		if err != nil && lastErr != nil {
-			errs <- lastErr
+		if readErr != nil && readErr != io.EOF {
+			errs <- readErr
+			return
 		}
 	}()
 	return out, errs
@@ -269,7 +245,7 @@ func parseSSEStream(ctx context.Context, r io.Reader, cb func(*CodeAssistEnvelop
 //     and POST :onboardUser with {tierId, metadata:{pluginType:"GEMINI"}, cloudaicompanionProject:"default"}
 //   - poll :onboardUser with same body until {done:true}
 //   - return response.cloudaicompanionProject.id
-func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
+func (c *CaClient) DiscoverProjectID(ctx context.Context) (string, error) {
 	type allowedTier struct {
 		ID        string `json:"id"`
 		IsDefault bool   `json:"isDefault"`
@@ -283,7 +259,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 	var lr loadResp
 	if err := c.doJSON(ctx, "loadCodeAssist", map[string]any{
 		"metadata": map[string]any{"pluginType": "GEMINI"},
-	}, &lr); err != nil {
+	}, &lr, DefaultUA); err != nil {
 		return "", err
 	}
 	if len(lr.CloudAICompanionProject) > 0 && string(lr.CloudAICompanionProject) != "null" {
@@ -333,7 +309,7 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 			return "", fmt.Errorf("discover project timeout")
 		}
 		var or onboardResp
-		if err := c.doJSON(ctx, "onboardUser", req, &or); err != nil {
+		if err := c.doJSON(ctx, "onboardUser", req, &or, DefaultUA); err != nil {
 			return "", err
 		}
 		if or.Done {
@@ -354,21 +330,21 @@ func (c *Client) DiscoverProjectID(ctx context.Context) (string, error) {
 }
 
 // doJSON posts JSON to ":<method>" and decodes the JSON response into out.
-func (c *Client) doJSON(ctx context.Context, method string, body any, out any) error {
+func (c *CaClient) doJSON(ctx context.Context, method string, body any, out any, ua string) error {
 	url := fmt.Sprintf("%s/%s:%s", c.baseURL, APIVer, method)
 	pb, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
 	var lastErr error
-	return httpx.WithRetries(ctx, c.retries, c.baseDelay, func(attempt int) error {
+	return httpx.WithRetries(ctx, c.transportRetries, c.baseDelay, func(attempt int) error {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(pb))
 		if err != nil {
 			lastErr = err
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", UserAgent)
+		req.Header.Set("User-Agent", ua)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = err

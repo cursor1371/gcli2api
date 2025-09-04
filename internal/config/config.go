@@ -9,15 +9,22 @@ import (
 	"reflect"
 	"strings"
 
+	"gcli2api/internal/utils"
 	"github.com/sirupsen/logrus"
 	json5 "github.com/yosuke-furukawa/json5/encoding/json5"
 )
+
+// UserAgent is the HTTP User-Agent used for upstream requests.
+// It can be overridden at runtime (e.g., from config).
+var UserAgent = "google-api-nodejs-client/9.15.1"
 
 type Config struct {
 	Host                 string   `json:"host"`
 	ServerPort           int      `json:"port"`
 	AuthKey              string   `json:"authKey"`
 	GeminiCredsFilePaths []string `json:"geminiOauthCredsFiles"`
+	// Optional user agent for upstream requests; if empty, a default is used.
+	UserAgent string `json:"userAgent"`
 	// ProjectIds maps a credential path to an ordered list of project IDs.
 	// Keys must match one of the entries in geminiOauthCredsFiles after ~ expansion.
 	// If a key exists with an empty list, it is treated as not configured and
@@ -91,6 +98,11 @@ func LoadConfig(path string) (Config, error) {
 		}
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
+	// Log user agent if provided
+	if strings.TrimSpace(cfg.UserAgent) != "" {
+		logrus.Infof("using user agent: %s", cfg.UserAgent)
+		UserAgent = cfg.UserAgent
+	}
 	// Defaults
 	if cfg.Host == "" {
 		cfg.Host = "127.0.0.1"
@@ -150,7 +162,7 @@ func (c Config) Validate(cfgPath string) error {
 			if p == "" {
 				continue
 			}
-			xp, err := expandUser(p)
+			xp, err := utils.ExpandUser(p)
 			if err != nil {
 				return fmt.Errorf("expand creds path %q: %w", p, err)
 			}
@@ -158,7 +170,7 @@ func (c Config) Validate(cfgPath string) error {
 		}
 		// Validate each projectIds key
 		for k := range c.ProjectIds {
-			xp, err := expandUser(k)
+			xp, err := utils.ExpandUser(k)
 			if err != nil {
 				return fmt.Errorf("expand projectIds key %q: %w", k, err)
 			}
@@ -168,19 +180,4 @@ func (c Config) Validate(cfgPath string) error {
 		}
 	}
 	return nil
-}
-
-// expandUser mirrors internal/utils.ExpandUser without importing utils to avoid cycles.
-func expandUser(path string) (string, error) {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if path == "~" {
-			return home, nil
-		}
-		return home + string(os.PathSeparator) + strings.TrimPrefix(path, "~/"), nil
-	}
-	return path, nil
 }

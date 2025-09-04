@@ -2,7 +2,9 @@ package codeassist
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -37,7 +39,9 @@ type MultiClient struct {
 	clientID string
 
 	// factory for unit tests
-	mkClient  func(httpCli *http.Client, retries int, baseDelay time.Duration) *Client
+	mkCaClient func(httpCli *http.Client, retries int, baseDelay time.Duration) *CaClient
+	// retries is the MultiClient cross-unit retry budget. Total attempts
+	// per request = 1 + retries.
 	retries   int
 	baseDelay time.Duration
 	proxyURL  *url.URL
@@ -47,7 +51,7 @@ type entry struct {
 	idx       int
 	path      string
 	tokenKey  string
-	ca        *Client
+	ca        *CaClient
 	projectID atomic.Value // string
 }
 
@@ -58,8 +62,11 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		store:    st,
 		provider: "gemini-cli-oauth",
 		clientID: oauthCfg.ClientID,
-		mkClient: func(httpCli *http.Client, retries int, baseDelay time.Duration) *Client {
-			return NewClient(httpCli, retries, baseDelay)
+		mkCaClient: func(httpCli *http.Client, retries int, baseDelay time.Duration) *CaClient {
+			// Keep a small transport retry budget for discovery-only JSON calls.
+			// Generation paths do not use per-unit retries.
+			transportRetries := 2
+			return NewCaClient(httpCli, transportRetries, baseDelay)
 		},
 		retries:   retries,
 		baseDelay: baseDelay,
@@ -71,7 +78,7 @@ func NewMultiClient(oauthCfg oauth2.Config, sources []CredSource, retries int, b
 		baseTS := oauthCfg.TokenSource(context.Background(), src.Raw.ToOAuth2Token())
 		ts := auth.NewPersistingTokenSource(baseTS, src.Raw, src.Path, src.Persist)
 		httpCli := httpx.NewOAuthHTTPClient(ts, proxyURL)
-		ca := mc.mkClient(httpCli, retries, baseDelay)
+		ca := mc.mkCaClient(httpCli, retries, baseDelay)
 		identity := src.Raw.RefreshToken
 		tokenKey := state.ComputeTokenKey(mc.provider, mc.clientID, identity)
 		if units, ok := projectMap[src.Path]; ok {
@@ -142,82 +149,146 @@ func (mc *MultiClient) GenerateContent(ctx context.Context, model, project strin
 	}
 	start := mc.pickStart()
 	var lastErr error
-	for i := 0; i < n; i++ {
-		j := (start + i) % n
+	total := mc.retries + 1
+	for k := 0; k < total; k++ {
+		j := (start + k) % n
 		e := mc.entries[j]
 		prj := project
 		if prj == "" {
 			pid, err := mc.getOrDiscoverProjectID(ctx, e)
 			if err != nil {
 				lastErr = err
-				// Treat discovery failure like a hard error; don't rotate unless 401/429 below, so return.
-				return nil, err
+				logrus.Warnf("[MultiClient] discovery failed; rotating attempt=%d idx=%d err=%v", k+1, e.idx, err)
+				// rotate on discovery failure
+				continue
 			}
 			prj = pid
 		}
 		credName := e.displayName()
-		logrus.Infof("[MultiClient] attempt=%d idx=%d cred=%s model=%s project=%s", i+1, e.idx, credName, model, prj)
+		logrus.Infof("[MultiClient] attempt=%d idx=%d cred=%s model=%s project=%s", k+1, e.idx, credName, model, prj)
 		resp, err := e.ca.GenerateContent(ctx, model, prj, req)
 		if err == nil {
 			logrus.Infof("[MultiClient] status=ok idx=%d cred=%s project=%s", e.idx, credName, prj)
 			return resp, nil
 		}
 		lastErr = err
-		// Rotate only on 401/429
-		es := err.Error()
-		if strings.Contains(es, "status 401") || strings.Contains(es, "status 429") {
-			logrus.Warnf("[MultiClient] rotating on error idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
-			continue
+		if k == total-1 || !isRetryable(err) {
+			logrus.Warnf("[MultiClient] non-retryable or budget exhausted idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
+			return nil, err
 		}
-		// Return immediately for other errors
-		logrus.Warnf("[MultiClient] non-rotating error idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
-		return nil, err
+		logrus.Warnf("[MultiClient] rotating on error idx=%d cred=%s project=%s err=%v", e.idx, credName, prj, err)
+		continue
 	}
 	return nil, lastErr
 }
 
 func (mc *MultiClient) GenerateContentStream(ctx context.Context, model, project string, req gemini.GeminiRequest) (<-chan gemini.GeminiAPIResponse, <-chan error) {
-	// Single-cred-per-stream policy.
 	out := make(chan gemini.GeminiAPIResponse, 16)
-	errs := make(chan error, 1)
+	// Unbuffered error channel ensures consumers observe error before out closes
+	errs := make(chan error)
 	go func() {
-		defer close(out)
-		defer close(errs)
 		n := len(mc.entries)
 		if n == 0 {
+			// Close out first so receivers break their loops, then send error
+			close(out)
 			errs <- fmt.Errorf("no credentials configured")
+			close(errs)
 			return
 		}
-		e := mc.entries[mc.pickStart()]
-		prj := project
-		if prj == "" {
-			pid, err := mc.getOrDiscoverProjectID(ctx, e)
-			if err != nil {
-				errs <- err
-				return
+		start := mc.pickStart()
+		total := mc.retries + 1
+		var lastErr error
+		for k := 0; k < total; k++ {
+			j := (start + k) % n
+			e := mc.entries[j]
+			prj := project
+			if prj == "" {
+				pid, err := mc.getOrDiscoverProjectID(ctx, e)
+				if err != nil {
+					lastErr = err
+					logrus.Warnf("[MultiClient] discovery failed (stream); rotating attempt=%d idx=%d err=%v", k+1, e.idx, err)
+					// rotate on discovery failure
+					continue
+				}
+				prj = pid
 			}
-			prj = pid
-		}
-		credName := e.displayName()
-		logrus.Infof("[MultiClient] streaming idx=%d cred=%s model=%s project=%s", e.idx, credName, model, prj)
-		upOut, upErrs := e.ca.GenerateContentStream(ctx, model, prj, req)
-		for {
-			select {
-			case g, ok := <-upOut:
-				if !ok {
+			credName := e.displayName()
+			logrus.Infof("[MultiClient] streaming attempt=%d idx=%d cred=%s model=%s project=%s", k+1, e.idx, credName, model, prj)
+			upOut, upErrs := e.ca.GenerateContentStream(ctx, model, prj, req)
+			sentAny := false
+			// Inner loop for this upstream stream
+			for {
+				select {
+				case g, ok := <-upOut:
+					if !ok {
+						// Upstream output closed. If an error is pending, forward it;
+						// otherwise, finish gracefully.
+						if upErrs != nil {
+							select {
+							case e2, ok2 := <-upErrs:
+								if ok2 && e2 != nil {
+									// Deliver error first so consumer sees it before out closes
+									errs <- e2
+									close(out)
+									close(errs)
+									return
+								}
+							case <-ctx.Done():
+								errs <- ctx.Err()
+								close(out)
+								close(errs)
+								return
+							}
+						}
+						// No error pending; close cleanly
+						close(out)
+						close(errs)
+						return
+					}
+					sentAny = true
+					out <- g
+				case err, ok := <-upErrs:
+					if !ok || err == nil {
+						// Treat closed errs channel as normal end; continue
+						// draining output until it closes.
+						upErrs = nil
+						continue
+					}
+					if err != nil {
+						if !sentAny && k < total-1 && isRetryable(err) {
+							logrus.Warnf("[MultiClient] rotating stream on early error idx=%d cred=%s err=%v", e.idx, credName, err)
+							// break inner loop to next attempt
+							lastErr = err
+							goto nextAttempt
+						}
+						// either after first event or not retryable/budget exhausted
+						// Deliver error first so consumer sees it before out closes
+						errs <- err
+						close(out)
+						close(errs)
+						return
+					}
+				case <-ctx.Done():
+					errs <- ctx.Err()
+					close(out)
+					close(errs)
 					return
 				}
-				out <- g
-			case err := <-upErrs:
-				if err != nil {
-					errs <- err
-				}
-				return
-			case <-ctx.Done():
-				errs <- ctx.Err()
-				return
 			}
+		nextAttempt:
+			continue
 		}
+		// All attempts exhausted or only discovery failures
+		if lastErr != nil {
+			// Close out first so receivers break their loops, then deliver the error
+			close(out)
+			errs <- lastErr
+			close(errs)
+			return
+		}
+		// Otherwise clean completion without error
+		close(out)
+		close(errs)
 	}()
 	return out, errs
 }
@@ -265,4 +336,32 @@ func (mc *MultiClient) getOrDiscoverProjectID(ctx context.Context, e *entry) (st
 		_ = mc.store.UpsertProjectID(ctx, e.tokenKey, mc.provider, mc.clientID, pid)
 	}
 	return pid, nil
+}
+
+// isRetryable determines if an error should trigger rotation/retry.
+// It treats HTTP 401, 403, 429, and all 5xx as retryable, as well as
+// common transport timeouts. Context cancellations are not retried.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	s := err.Error()
+	if strings.Contains(s, "status 401") || strings.Contains(s, "status 403") || strings.Contains(s, "status 429") {
+		return true
+	}
+	if strings.Contains(s, "status 5") { // covers 5xx
+		return true
+	}
+	// Transport/classic timeouts
+	ls := strings.ToLower(s)
+	if strings.Contains(ls, "timeout") || strings.Contains(ls, "connection reset") || strings.Contains(ls, "temporary failure") || strings.Contains(ls, "unexpected eof") {
+		return true
+	}
+	return false
 }
