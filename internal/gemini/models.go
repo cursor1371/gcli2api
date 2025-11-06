@@ -13,6 +13,7 @@ var SupportedModels = []ModelInfo{
 	{Name: "gemini-2.5-pro", DisplayName: "Gemini 2.5 Pro", Description: "Accurate multimodal generation"},
 	{Name: "gemini-2.5-pro-preview-06-05", DisplayName: "Gemini 2.5 Pro Preview (06-05)", Description: "Accurate multimodal generation"},
 	{Name: "gemini-2.5-pro-preview-05-06", DisplayName: "Gemini 2.5 Pro Preview (05-06)", Description: "Accurate multimodal generation"},
+	{Name: "gemini-3-pro-preview-11-2025", DisplayName: "Gemini 3.0 Pro Preview (06-11)", Description: "NEW TEST"},
 }
 
 // IsSupportedModel reports whether the given model name is supported.
